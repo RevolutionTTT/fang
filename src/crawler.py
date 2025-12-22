@@ -148,7 +148,7 @@ class ProxyManager:
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
 )
 async def scrape_fang_details(book_url,sem,proxy_manager):
-    """爬取图书详情 - 使用配置了代理的连接器"""
+    """爬取房产详情 - 使用配置了代理的连接器"""
     async with sem:
         session_info = proxy_manager.get_session()
         if not session_info:
@@ -178,7 +178,7 @@ async def scrape_fang_details(book_url,sem,proxy_manager):
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
 )
 async def fetch_fang_urls(url,sem,proxy_manager):
-    """获取图书列表页链接 - 使用配置了代理的连接器"""
+    """获房产列表页链接 - 使用配置了代理的连接器"""
     async with sem:
         session_info = proxy_manager.get_session()
         if not session_info:
@@ -192,7 +192,7 @@ async def fetch_fang_urls(url,sem,proxy_manager):
                 if resp.status == 200:
                     html = await resp.text()
                     fang_urls = parser.parse_fang_href(html)
-                    logger.info(f"✓ [{current_proxy}] 成功解析页面 {url}, 找到 {len(fang_urls)} 个图书链接")
+                    logger.info(f"✓ [{current_proxy}] 成功解析页面 {url}, 找到 {len(fang_urls)} 房产链接")
                     return fang_urls
                 else:
                     logger.warning(f"✗ [{current_proxy}] 页面请求失败 {url}, 状态码: {resp.status}")
@@ -216,23 +216,23 @@ async def main():
         # 设置并发信号量
         sem = Semaphore(CONCURRENT_REQUESTS)
 
-        #获取所有图书详情页链接
-        logger.info("开始获取图书链接...")
+        #获取所房产详情页链接
+        logger.info("开始获取房产链接...")
         fang_tasks = [fetch_fang_urls(url,sem,proxy_manager) for url in urls]
         fang_urls_results = await asyncio.gather(*fang_tasks)
 
         valid_urls = [urls for urls in fang_urls_results if urls] #过滤空值
         flat_urls = list(itertools.chain.from_iterable(valid_urls)) #将二维数组转化为一维数组
-        logger.info(f"共找到 {len(flat_urls)} 个图书详情页链接")
+        logger.info(f"共找到 {len(flat_urls)} 个房产详情页链接")
 
-        #爬取图书详情
-        logger.info("开始爬取图书详情...")
+        #爬取房产详情
+        logger.info("开始爬取房产详情...")
         detail_tasks = [scrape_fang_details(url,sem,proxy_manager) for url in flat_urls]
         results = await asyncio.gather(*detail_tasks)
 
 
         valid_results = [r for r in results if r] # 过滤空值
-        logger.info(f"成功获取 {len(valid_results)} 个图书详情")
+        logger.info(f"成功获取 {len(valid_results)} 个房产详情")
 
         return valid_results
 
