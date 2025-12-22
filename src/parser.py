@@ -1,24 +1,21 @@
-from urllib.parse import urljoin
 from lxml import etree
-
-def parse_book_detail(html):
+from config import base_url
+def parse_fang_detail(html):
     tree = etree.HTML(html)
-    title = tree.xpath('//div[@class="col-sm-6 product_main"]/h1/text()')
-    price = tree.xpath('//div[@class="col-sm-6 product_main"]/p[@class="price_color"]/text()')
-    description = tree.xpath('//div[@id="product_description"]/following-sibling::p/text()')
+    title = tree.xpath('//div[@class="wid1200 clearfix"]//span/text()')
+    price = tree.xpath('//div[@class="tab-cont-right"]//i/text()')
     title = title[0] if title else "未命名"
     price = price[0] if price else "未定价"
-    description = description[0] if description else "无描述"
-    book = {
+    fang = {
         "title": title,
-        "price": price,
-        "description": description
+        "price": price
+
     }
-    return book
-def parse_book_href(html, base_url):
+    return fang
+def parse_fang_href(html):
     tree = etree.HTML(html)
-    hrefs = tree.xpath('//article[@class="product_pod"]/h3/a/@href')
+    hrefs = tree.xpath('//div[@class="shop_list shop_list_4"]//h4[@class="clearfix"]/a/@href')
     print(hrefs)
-    book_urls = [urljoin(base_url,href) for href in hrefs if href is not None]
-    print(book_urls)
-    return book_urls
+    fang_urls = [base_url + href for href in hrefs if href is not None]
+    print(fang_urls)
+    return fang_urls

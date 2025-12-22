@@ -1,11 +1,6 @@
-PROXY_POOL  = [
-     "socks5://user:password@host1:port1",
-     "socks5://user:password@host2:port2",
-     "socks5://user:password@host3:port3"
-]
+import os
+from dotenv import load_dotenv
 
+load_dotenv()
 
-
-
-
-
+PROXY_POOL = os.getenv("PROXY_POOL").split("|")

@@ -14,9 +14,7 @@ import os
 CONCURRENT_REQUESTS = config.CONCURRENT_REQUESTS
 headers = config.headers #请求头设置
 #页面链接
-links = config.links
 base_url = config.base_url
-
 #日志配置
 LOG_DIR = "../log"
 os.makedirs(LOG_DIR, exist_ok=True)
@@ -63,9 +61,9 @@ class ProxyManager:
                 """ 创建连接器并配置代理 """
                 connector = ProxyConnector.from_url(
                     proxy_url,  # 这里配置代理
-                    limit=2,  # 连接池大小
-                    limit_per_host=2,  # 每个主机限制
-                    keepalive_timeout=60,
+                    limit=5,  # 连接池大小
+                    limit_per_host=3,  # 每个主机限制
+                    keepalive_timeout=5,
                 )
 
                 # 创建使用该连接器的会话
@@ -149,7 +147,7 @@ class ProxyManager:
     wait=wait_exponential(multiplier=1, min=2, max=10),  # 指数退避
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
 )
-async def scrape_book_details(book_url,sem,proxy_manager):
+async def scrape_fang_details(book_url,sem,proxy_manager):
     """爬取图书详情 - 使用配置了代理的连接器"""
     async with sem:
         session_info = proxy_manager.get_session()
@@ -163,7 +161,7 @@ async def scrape_book_details(book_url,sem,proxy_manager):
             async with session.get(book_url) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    book_data = parser.parse_book_detail(html)
+                    book_data = parser.parse_fang_detail(html)
                     logger.info(f"✓ [{current_proxy}] 成功获取: {book_data['title'][:30]}...")
                     return book_data
                 else:
@@ -179,7 +177,7 @@ async def scrape_book_details(book_url,sem,proxy_manager):
     wait=wait_exponential(multiplier=1, min=2, max=10),  # 指数退避
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
 )
-async def fetch_book_urls(url,sem,proxy_manager):
+async def fetch_fang_urls(url,sem,proxy_manager):
     """获取图书列表页链接 - 使用配置了代理的连接器"""
     async with sem:
         session_info = proxy_manager.get_session()
@@ -193,9 +191,9 @@ async def fetch_book_urls(url,sem,proxy_manager):
             async with session.get(url) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    book_urls = parser.parse_book_href(html,base_url)
-                    logger.info(f"✓ [{current_proxy}] 成功解析页面 {url}, 找到 {len(book_urls)} 个图书链接")
-                    return book_urls
+                    fang_urls = parser.parse_fang_href(html)
+                    logger.info(f"✓ [{current_proxy}] 成功解析页面 {url}, 找到 {len(fang_urls)} 个图书链接")
+                    return fang_urls
                 else:
                     logger.warning(f"✗ [{current_proxy}] 页面请求失败 {url}, 状态码: {resp.status}")
                     return []
@@ -220,16 +218,16 @@ async def main():
 
         #获取所有图书详情页链接
         logger.info("开始获取图书链接...")
-        book_tasks = [fetch_book_urls(url,sem,proxy_manager) for url in urls]
-        book_urls_results = await asyncio.gather(*book_tasks)
+        fang_tasks = [fetch_fang_urls(url,sem,proxy_manager) for url in urls]
+        fang_urls_results = await asyncio.gather(*fang_tasks)
 
-        valid_urls = [urls for urls in book_urls_results if urls] #过滤空值
+        valid_urls = [urls for urls in fang_urls_results if urls] #过滤空值
         flat_urls = list(itertools.chain.from_iterable(valid_urls)) #将二维数组转化为一维数组
         logger.info(f"共找到 {len(flat_urls)} 个图书详情页链接")
 
         #爬取图书详情
         logger.info("开始爬取图书详情...")
-        detail_tasks = [scrape_book_details(url,sem,proxy_manager) for url in flat_urls]
+        detail_tasks = [scrape_fang_details(url,sem,proxy_manager) for url in flat_urls]
         results = await asyncio.gather(*detail_tasks)
 
 

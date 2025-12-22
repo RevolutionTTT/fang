@@ -5,8 +5,8 @@ import os
 async def main():
     # 正确调用异步函数
     data = await crawler.main()
-    os.makedirs("../books_data",exist_ok=True)  # 创建文件存放目录
-    books_data = os.path.join("../books_data",f"books_data.csv")
+    os.makedirs("../fang_data",exist_ok=True)  # 创建文件存放目录
+    books_data = os.path.join("../fang_data",f"fang_data.csv")
     # 保存到CSV
     if data:
         with open(books_data,'w', newline='', encoding='utf-8-sig') as f:
@@ -24,7 +24,7 @@ async def main():
                 except Exception as e:
                     print(f"[错误] 第 {idx} 条数据写入失败: {e}")
 
-        print(f"成功保存 {count} 条数据到 books_data.csv")
+        print(f"成功保存 {count} 条数据到 fang_data.csv")
 
 # 运行异步主函数
 if __name__ == "__main__":
