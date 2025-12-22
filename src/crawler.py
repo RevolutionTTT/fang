@@ -64,8 +64,8 @@ class ProxyManager:
                 """ 创建连接器并配置代理 """
                 connector = ProxyConnector.from_url(
                     proxy_url,  # 这里配置代理
-                    limit=20,  # 连接池大小
-                    limit_per_host=12,  # 每个主机限制
+                    limit=5,  # 连接池大小
+                    limit_per_host=3,  # 每个主机限制
                     keepalive_timeout=5,
                 )
 
@@ -185,28 +185,28 @@ class ProxyManager:
     wait=wait_exponential(multiplier=1, min=2, max=10),  # 指数退避
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
 )
-async def scrape_fang_details(book_url,sem,proxy_manager):
+async def scrape_fang_details(fang_url,sem,proxy_manager):
     """爬取房产详情 - 使用配置了代理的连接器"""
     async with sem:
         session_info = proxy_manager.get_session()
         if not session_info:
-            logger.warning(f"✗ 没有可用的会话，跳过 {book_url}")
+            logger.warning(f"✗ 没有可用的会话，跳过 {fang_url}")
             return None
 
         session,current_proxy = session_info
 
         try:
-            async with session.get(book_url) as resp:
+            async with session.get(fang_url) as resp:
                 if resp.status == 200:
                     html = await resp.text()
-                    book_data = parser.parse_fang_detail(html)
-                    logger.info(f"✓ [{current_proxy}] 成功获取: {book_data['title'][:30]}...")
-                    return book_data
+                    fang_data = parser.parse_fang_detail(html)
+                    logger.info(f"✓ [{current_proxy}] 成功获取: {fang_data['title'][:30]}...")
+                    return fang_data
                 else:
-                    logger.warning(f"✗ [{current_proxy}] 请求失败 {book_url}, 状态码: {resp.status}")
+                    logger.warning(f"✗ [{current_proxy}] 请求失败 {fang_url}, 状态码: {resp.status}")
                     return None
         except Exception as e:
-            logger.warning(f"✗ [{current_proxy}] 请求错误 {book_url}: {e}")
+            logger.warning(f"✗ [{current_proxy}] 请求错误 {fang_url}: {e}")
             #这里写替换代理的逻辑
             await proxy_manager.replace_proxy(current_proxy)
             raise

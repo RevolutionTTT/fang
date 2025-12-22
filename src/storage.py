@@ -11,12 +11,12 @@ async def storage(data):
             writer.writerow(['标题','价格','描述'])  # 表头
 
             count = 0
-            for idx, book in enumerate(data):
-                if book is None:
+            for idx, fang in enumerate(data):
+                if fang is None:
                     print(f"[警告] 第 {idx} 条数据为空，跳过")
                     continue
                 try:
-                    writer.writerow([book.get('title',''), book.get('price',''), book.get('description','')])
+                    writer.writerow([fang.get('title',''), fang.get('price',''), fang.get('description','')])
                     count += 1
                 except Exception as e:
                     print(f"[错误] 第 {idx} 条数据写入失败: {e}")
