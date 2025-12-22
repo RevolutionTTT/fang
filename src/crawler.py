@@ -10,6 +10,7 @@ from aiohttp_socks import ProxyConnector
 from proxy import PROXY_POOL
 import logging
 import os
+from storage import storage
 # 限制并发量，避免一次性开太多请求
 CONCURRENT_REQUESTS = config.CONCURRENT_REQUESTS
 headers = config.headers #请求头设置
@@ -233,8 +234,9 @@ async def main():
 
         valid_results = [r for r in results if r] # 过滤空值
         logger.info(f"成功获取 {len(valid_results)} 个房产详情")
+        await  storage(valid_results)
 
-        return valid_results
+
 
     finally:
         # 确保关闭所有连接器和会话

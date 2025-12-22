@@ -1,15 +1,13 @@
-import asyncio
 import csv
-import crawler
 import os
-async def main():
+async def storage(data):
     # 正确调用异步函数
-    data = await crawler.main()
+
     os.makedirs("../fang_data",exist_ok=True)  # 创建文件存放目录
-    books_data = os.path.join("../fang_data",f"fang_data.csv")
+    fang_data = os.path.join("../fang_data",f"fang_data.csv")
     # 保存到CSV
     if data:
-        with open(books_data,'w', newline='', encoding='utf-8-sig') as f:
+        with open(fang_data,'w', newline='', encoding='utf-8-sig') as f:
             writer = csv.writer(f)
             writer.writerow(['标题','价格','描述'])  # 表头
 
@@ -26,7 +24,5 @@ async def main():
 
         print(f"成功保存 {count} 条数据到 fang_data.csv")
 
-# 运行异步主函数
-if __name__ == "__main__":
-    asyncio.run(main())
+
 
