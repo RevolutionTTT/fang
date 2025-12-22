@@ -2,7 +2,6 @@ import csv
 import os
 async def storage(data):
     # 正确调用异步函数
-
     os.makedirs("../fang_data",exist_ok=True)  # 创建文件存放目录
     fang_data = os.path.join("../fang_data",f"fang_data.csv")
     # 保存到CSV

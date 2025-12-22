@@ -7,7 +7,7 @@ import parser
 from tenacity import retry,stop_after_attempt,retry_if_exception_type, wait_exponential
 import seed_urls
 from aiohttp_socks import ProxyConnector
-from proxy import PROXY_POOL
+from proxy import PROXY_POOL,PROXY_POOL2
 import logging
 import os
 from storage import storage
@@ -20,7 +20,6 @@ base_url = config.base_url
 LOG_DIR = "../log"
 os.makedirs(LOG_DIR, exist_ok=True)
 LOG_FILE = os.path.join(LOG_DIR, "crawler.log") #文件路径
-
 logger = logging.getLogger(__name__)
 logger.setLevel(logging.INFO)
 
@@ -44,11 +43,14 @@ if not logger.handlers:
 class ProxyManager:
 
     def __init__(self,proxy_pool):
-        self.proxy_pool = proxy_pool #代理池
+        self.proxy_pool = proxy_pool #代理池，用 proxy_pool[idx] = new_proxy替换
         self.connectors = []  # 存储配置了代理的连接器
         self.sessions = []  # 存储使用这些连接器的会话
         self.current_index = 0 #轮询代理会话
         self.initialized = False #标记连接器是否已经初始化过
+        self.proxy_index = {} #以键值对的形式存储代理索引
+        self.proxy_pool2 = PROXY_POOL2
+        self._replace_lock = asyncio.Lock()
 
     async def init_connectors(self):
         """ 为代理池中的每个代理创建专用的连接器 """
@@ -57,13 +59,13 @@ class ProxyManager:
 
         logger.info(f"正在创建 {len(self.proxy_pool)} 个配置了代理的连接器...")
 
-        for proxy_url in self.proxy_pool:
+        for a,proxy_url in enumerate(self.proxy_pool):
             try:
                 """ 创建连接器并配置代理 """
                 connector = ProxyConnector.from_url(
                     proxy_url,  # 这里配置代理
-                    limit=5,  # 连接池大小
-                    limit_per_host=3,  # 每个主机限制
+                    limit=20,  # 连接池大小
+                    limit_per_host=12,  # 每个主机限制
                     keepalive_timeout=5,
                 )
 
@@ -74,9 +76,9 @@ class ProxyManager:
                     headers=headers,
 
                 )
-
                 self.connectors.append(connector)
                 self.sessions.append(session)
+                self.proxy_index[proxy_url] = a #通过代理名称拿到它的索引，方便替换失效代理
                 logger.info(f"✓ 创建连接器并配置代理: {proxy_url}")
 
             except Exception as e:
@@ -121,6 +123,41 @@ class ProxyManager:
         if index < len(self.proxy_pool):
             return self.proxy_pool[index]
         return "直连"
+
+    async def replace_proxy(self,bad_proxy):
+        async with self._replace_lock:
+            if bad_proxy not in self.proxy_index:
+                logger.warning(f"代理不在索引中，跳过替换: {bad_proxy}")
+                return
+
+            if not self.proxy_pool2:
+                logger.warning("备用代理池已空，无法替换")
+                return
+
+            new_proxy = self.proxy_pool2.pop(0)  # 原子取走，避免并发重复用同一个
+
+            idx = self.proxy_index[bad_proxy]
+            logger.warning(f"♻️ 替换失效代理: {bad_proxy} -> {new_proxy}")
+
+            try:
+                await self.sessions[idx].close()
+                await self.connectors[idx].close()
+            except Exception as e:
+                logger.warning(f"关闭旧代理资源失败: {e}")
+
+            connector = ProxyConnector.from_url(
+                new_proxy,limit=20,limit_per_host=12,keepalive_timeout=5
+            )
+            session = aiohttp.ClientSession(
+                connector=connector,timeout=config.timeout,headers=headers
+            )
+
+            self.proxy_pool[idx] = new_proxy
+            self.connectors[idx] = connector
+            self.sessions[idx] = session
+
+            del self.proxy_index[bad_proxy]
+            self.proxy_index[new_proxy] = idx
 
     async def close_all(self):
         """关闭所有连接器和会话"""
@@ -170,7 +207,9 @@ async def scrape_fang_details(book_url,sem,proxy_manager):
                     return None
         except Exception as e:
             logger.warning(f"✗ [{current_proxy}] 请求错误 {book_url}: {e}")
-            return None
+            #这里写替换代理的逻辑
+            await proxy_manager.replace_proxy(current_proxy)
+            raise
 
 
 @retry(
@@ -200,7 +239,8 @@ async def fetch_fang_urls(url,sem,proxy_manager):
                     return []
         except Exception as e:
             logger.warning(f"✗ [{current_proxy}] 页面请求错误 {url}: {e}")
-            return []
+            await proxy_manager.replace_proxy(current_proxy)
+            raise
 
 
 async def main():
