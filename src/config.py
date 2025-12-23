@@ -1,11 +1,30 @@
 # 限制并发量，避免一次性开太多请求
 import aiohttp
+import os
+from pathlib import Path
+from dotenv import load_dotenv
+
+load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 CONCURRENT_REQUESTS = 10
 base_url = 'https://esf.fang.com'
 timeout = aiohttp.ClientTimeout(total=60,
                                 sock_connect=60,  # socket连接超时
                                 sock_read=60  # socket读取超时
                                 )
+# =========================
+# MySQL 配置（新增）
+# =========================
+# storage 层只读这些变量，不做任何兜底
+
+MYSQL_HOST = os.getenv("MYSQL_HOST", "127.0.0.1")
+MYSQL_PORT = int(os.getenv("MYSQL_PORT", "3306"))
+MYSQL_USER = os.getenv("MYSQL_USER", "root")
+MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD", "password")
+MYSQL_DB = os.getenv("MYSQL_DB", "fang_data")
+
+# MySQL 连接池
+MYSQL_POOL_MIN = int(os.getenv("MYSQL_POOL_MIN", "1"))
+MYSQL_POOL_MAX = int(os.getenv("MYSQL_POOL_MAX", "10"))
 headers = {
     "authority": "esf.fang.com",
     "method": "GET",

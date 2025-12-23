@@ -10,7 +10,8 @@ from aiohttp_socks import ProxyConnector
 from proxy import PROXY_POOL,PROXY_POOL2
 import logging
 import os
-from storage import storage
+from storage import MySQLStorage
+
 # 限制并发量，避免一次性开太多请求
 CONCURRENT_REQUESTS = config.CONCURRENT_REQUESTS
 headers = config.headers #请求头设置
@@ -101,18 +102,16 @@ class ProxyManager:
         logger.info(f"连接器初始化完成，共有 {len(self.connectors)} 个连接器")
 
     def get_session(self):
-        """轮询返回配置了不同代理的会话"""
+        """轮询返回 (session, idx, current_proxy)"""
         if not self.sessions:
             return None
 
-        session = self.sessions[self.current_index % len(self.sessions)]
+        idx = self.current_index % len(self.sessions)
         self.current_index += 1
 
-        # 获取当前会话对应的代理信息（用于日志）
-        proxy_index = (self.current_index - 1) % len(self.sessions)
-        current_proxy = self.proxy_pool[proxy_index] if proxy_index < len(self.proxy_pool) else "直连"
-
-        return session,current_proxy
+        session = self.sessions[idx]
+        current_proxy = self.proxy_pool[idx] if idx < len(self.proxy_pool) else "直连"
+        return session,idx,current_proxy
 
     def get_connector_count(self):
         """返回连接器数量"""
@@ -124,40 +123,49 @@ class ProxyManager:
             return self.proxy_pool[index]
         return "直连"
 
-    async def replace_proxy(self,bad_proxy):
+    async def replace_proxy(self,idx: int):
         async with self._replace_lock:
-            if bad_proxy not in self.proxy_index:
-                logger.warning(f"代理不在索引中，跳过替换: {bad_proxy}")
+            if idx < 0 or idx >= len(self.sessions):
+                logger.warning(f"无效 idx，跳过替换: idx={idx}")
                 return
 
             if not self.proxy_pool2:
                 logger.warning("备用代理池已空，无法替换")
                 return
 
-            new_proxy = self.proxy_pool2.pop(0)  # 原子取走，避免并发重复用同一个
+            bad_proxy = self.proxy_pool[idx]
+            new_proxy = self.proxy_pool2.pop(0)
 
-            idx = self.proxy_index[bad_proxy]
-            logger.warning(f"♻️ 替换失效代理: {bad_proxy} -> {new_proxy}")
+            logger.warning(f"♻️ 替换失效代理(idx={idx}): {bad_proxy} -> {new_proxy}")
 
+            # 关闭旧资源
             try:
                 await self.sessions[idx].close()
+            except Exception as e:
+                logger.warning(f"关闭旧 session 失败: {e}")
+
+            try:
                 await self.connectors[idx].close()
             except Exception as e:
-                logger.warning(f"关闭旧代理资源失败: {e}")
+                logger.warning(f"关闭旧 connector 失败: {e}")
 
+            # 创建新 connector / session
             connector = ProxyConnector.from_url(
-                new_proxy,limit=20,limit_per_host=12,keepalive_timeout=5
+                new_proxy,
+                limit=20,
+                limit_per_host=12,
+                keepalive_timeout=5,
             )
             session = aiohttp.ClientSession(
-                connector=connector,timeout=config.timeout,headers=headers
+                connector=connector,
+                timeout=config.timeout,
+                headers=headers,
             )
 
+            # 原位替换（idx 不变）
             self.proxy_pool[idx] = new_proxy
             self.connectors[idx] = connector
             self.sessions[idx] = session
-
-            del self.proxy_index[bad_proxy]
-            self.proxy_index[new_proxy] = idx
 
     async def close_all(self):
         """关闭所有连接器和会话"""
@@ -185,31 +193,55 @@ class ProxyManager:
     wait=wait_exponential(multiplier=1, min=2, max=10),  # 指数退避
     retry=retry_if_exception_type((aiohttp.ClientError, asyncio.TimeoutError))
 )
-async def scrape_fang_details(fang_url,sem,proxy_manager):
-    """爬取房产详情 - 使用配置了代理的连接器"""
+# crawler.py
+
+async def scrape_fang_details(fang_url, sem, proxy_manager, db):
     async with sem:
         session_info = proxy_manager.get_session()
         if not session_info:
-            logger.warning(f"✗ 没有可用的会话，跳过 {fang_url}")
+            logger.warning(f"✗ 没有可用会话，跳过详情页: {fang_url}")
             return None
 
-        session,current_proxy = session_info
+        session, idx,current_proxy = session_info
 
         try:
             async with session.get(fang_url) as resp:
-                if resp.status == 200:
-                    html = await resp.text()
-                    fang_data = parser.parse_fang_detail(html)
-                    logger.info(f"✓ [{current_proxy}] 成功获取: {fang_data['title'][:30]}...")
-                    return fang_data
-                else:
-                    logger.warning(f"✗ [{current_proxy}] 请求失败 {fang_url}, 状态码: {resp.status}")
+                if resp.status != 200:
+                    logger.warning(f"✗ [{current_proxy}] 详情页状态码 {resp.status}: {fang_url}")
                     return None
+
+                html = await resp.text()
+                parsed = parser.parse_fang_detail(html)
+                # ❌ 解析失败（返回 {} 或 None），直接跳过
+                if not parsed:
+                    logger.warning(f"✗ [{current_proxy}] 解析失败，跳过: {fang_url}")
+                    return None
+                # ✅ crawler 负责注入上下文 & 规范化字段键；storage 不兜底、不校验
+                record = {
+                    "url": fang_url,
+                    "title": parsed.get("title"),
+                    "price": parsed.get("price"),
+                    "description": parsed.get("description"),
+                }
+
+                try:
+                    await db.upsert_one(record)  # 单条立刻入库
+                    logger.info(f"✓ [{current_proxy}] 入库成功: {fang_url}")
+                    return record
+                except Exception as e:
+                    # ✅ 入库失败只影响当前任务，不能拖死整批 gather
+                    logger.error(
+                        "✗ 入库失败 proxy=%s url=%s err=%s record=%r",
+                        current_proxy, fang_url, e, record
+                    )
+                    return None
+
         except Exception as e:
+            # 这里保留你现有的：超时/代理失败/网络异常处理逻辑（需要的话在此处替换代理）
             logger.warning(f"✗ [{current_proxy}] 请求错误 {fang_url}: {e}")
-            #这里写替换代理的逻辑
-            await proxy_manager.replace_proxy(current_proxy)
-            raise
+            await proxy_manager.replace_proxy(idx)
+            return None
+
 
 
 @retry(
@@ -225,10 +257,10 @@ async def fetch_fang_urls(url,sem,proxy_manager):
             logger.warning(f"✗ 没有可用的会话，跳过 {url}")
             return []
 
-        session,current_proxy = session_info
+        session,idx,current_proxy = session_info
 
         try:
-            async with session.get(url) as resp:
+            async with session.get(url,ssl=False) as resp:
                 if resp.status == 200:
                     html = await resp.text()
                     fang_urls = parser.parse_fang_href(html)
@@ -239,14 +271,26 @@ async def fetch_fang_urls(url,sem,proxy_manager):
                     return []
         except Exception as e:
             logger.warning(f"✗ [{current_proxy}] 页面请求错误 {url}: {e}")
-            await proxy_manager.replace_proxy(current_proxy)
-            raise
+            await proxy_manager.replace_proxy(idx)
+            return []
 
 
 async def main():
     # 创建连接器管理器
     proxy_manager = ProxyManager(PROXY_POOL)
     await proxy_manager.init_connectors()
+
+    # ✅ MySQL 持久连接池
+    db = MySQLStorage(
+        host=config.MYSQL_HOST,
+        port=config.MYSQL_PORT,
+        user=config.MYSQL_USER,
+        password=config.MYSQL_PASSWORD,
+        db=config.MYSQL_DB,
+        minsize=getattr(config, "MYSQL_POOL_MIN", 1),
+        maxsize=getattr(config, "MYSQL_POOL_MAX", 10),
+    )
+    await db.open()
 
     try:
         # 获取所有列表页URL
@@ -257,30 +301,30 @@ async def main():
         # 设置并发信号量
         sem = Semaphore(CONCURRENT_REQUESTS)
 
-        #获取所房产详情页链接
+        # 1) 先抓列表页 -> 拿详情页链接
         logger.info("开始获取房产链接...")
-        fang_tasks = [fetch_fang_urls(url,sem,proxy_manager) for url in urls]
-        fang_urls_results = await asyncio.gather(*fang_tasks)
+        fang_tasks = [fetch_fang_urls(url, sem, proxy_manager) for url in urls]
+        results = await asyncio.gather(*fang_tasks)
 
-        valid_urls = [urls for urls in fang_urls_results if urls] #过滤空值
-        flat_urls = list(itertools.chain.from_iterable(valid_urls)) #将二维数组转化为一维数组
-        logger.info(f"共找到 {len(flat_urls)} 个房产详情页链接")
+        # results 是二维 list，拍平
+        flat_urls = list(itertools.chain.from_iterable(results))
+        flat_urls = [u for u in flat_urls if u]  # 去掉空值
+        flat_urls = list(set(flat_urls))
+        logger.info(f"成功获取 {len(flat_urls)} 个详情页链接")
 
-        #爬取房产详情
-        logger.info("开始爬取房产详情...")
-        detail_tasks = [scrape_fang_details(url,sem,proxy_manager) for url in flat_urls]
-        results = await asyncio.gather(*detail_tasks)
+        # 2) 抓详情页 -> 每条立刻写入 MySQL（不再堆内存、不再一次性 storage()）
+        logger.info("开始爬取详情页并逐条入库...")
+        detail_tasks = [scrape_fang_details(u, sem, proxy_manager, db) for u in flat_urls]
+        detail_results = await asyncio.gather(*detail_tasks)
 
-
-        valid_results = [r for r in results if r] # 过滤空值
-        logger.info(f"成功获取 {len(valid_results)} 个房产详情")
-        await  storage(valid_results)
-
-
+        success_count = sum(1 for r in detail_results if r)
+        logger.info(f"详情页完成：成功入库 {success_count} 条（失败/跳过 {len(detail_results) - success_count} 条）")
 
     finally:
-        # 确保关闭所有连接器和会话
+        # ✅ 关闭资源（顺序：先关会话/代理，再关 DB 也可以；关键是都要关）
         await proxy_manager.close_all()
+        await db.close()
+
 
 
 if __name__ == "__main__":
